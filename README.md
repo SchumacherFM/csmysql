@@ -1,4 +1,130 @@
-# Go-MySQL-Driver
+# Fork of Go-MySQL-Driver (experimental)
+
+Can be used without `database/sql` package. Example
+
+```sql
+CREATE TABLE `core_config_data` (
+  `config_id` int(10) unsigned NOT NULL AUTO_INCREMENT COMMENT 'Config Id',
+  `scope` varchar(8) NOT NULL DEFAULT 'default' COMMENT 'Config Scope',
+  `scope_id` int(11) NOT NULL DEFAULT '0' COMMENT 'Config Scope Id',
+  `path` varchar(255) NOT NULL DEFAULT 'general' COMMENT 'Config Path',
+  `value` text COMMENT 'Config Value',
+  PRIMARY KEY (`config_id`),
+  UNIQUE KEY `CORE_CONFIG_DATA_SCOPE_SCOPE_ID_PATH` (`scope`,`scope_id`,`path`)
+) ENGINE=InnoDB AUTO_INCREMENT=40 DEFAULT CHARSET=utf8 COMMENT='Config Data';
+```
+
+```go
+package main
+
+import (
+    "context"
+    "database/sql/driver"
+    "testing"
+    "github.com/corestoreio/errors"
+)
+
+type TableCoreConfigDatas struct {
+	columns []string
+	Data    []*TableCoreConfigData
+	sel     *dbr.Select
+}
+
+type TableCoreConfigData struct {
+	ConfigID int64   
+	Scope    string   
+	ScopeID  int64    
+	Path     string     
+	Value    dbr.NullString  
+}
+
+func newTableCoreConfigDatas() *TableCoreConfigDatas {
+	return &TableCoreConfigDatas{
+		sel: dbr.NewSelect("*").From("core_config_data"),
+	}
+}
+
+// treats string value as unsigned integer representation
+func stringToInt(b []byte) int64 {
+	var val int64
+	for i := range b {
+		val *= 10
+		val += int64(b[i] - 0x30)
+	}
+	return val
+}
+
+func (s *TableCoreConfigDatas) LoadGoSQLDriverMySQL(ctx context.Context, dbc *csmysql.MysqlConn) (rowCount int64, _ error) {
+	tSQL, tArg, err := s.sel.ToSQL()
+	if err != nil {
+		return 0, errors.Wrap(err, "[dbr] Select.LoadGoSQLDriverMySQL.ToSQL")
+	}
+
+	fullSQL, err := dbr.Interpolate(tSQL, tArg...)
+	if err != nil {
+		return 0, errors.Wrap(err, "[dbr] Select.LoadGoSQLDriverMySQL.Interpolate")
+	}
+
+	rows, err := dbc.Query(fullSQL, nil)
+	if err != nil {
+		return 0, errors.Wrap(err, "[dbr] Select.LoadGoSQLDriverMySQL.query")
+	}
+
+	s.Data = make([]*TableCoreConfigData, 0, 10)
+	vals := make([]driver.Value, len(rows.Columns()))
+	err = rows.Next(vals)
+	for err == nil {
+		c := &TableCoreConfigData{
+			ConfigID: stringToInt(vals[0].([]byte)),
+			Scope:    string(vals[1].([]byte)),
+			ScopeID:  stringToInt(vals[2].([]byte)),
+			Path:     string(vals[3].([]byte)),
+		}
+		if v := vals[4]; v != nil {
+			c.Value = dbr.MakeNullString(string(vals[4].([]byte)))
+		}
+
+		s.Data = append(s.Data, c)
+		rowCount++
+		err = rows.Next(vals)
+	}
+
+	if err != nil && err != io.EOF {
+		return rowCount, errors.Wrap(err, "[dbr] Select.LoadGoSQLDriverMySQL.rows_err")
+	}
+	return rowCount, nil
+}
+
+func BenchmarkSelect_Integration_LoadGoSQLDriver(b *testing.B) {
+	env := os.Getenv("CS_DSN")
+	if env == "" {
+		b.Skip("env CS_DSN not set")
+	}
+	dbPool := csmysql.NewDB(env, 5)
+	defer dbPool.Close()
+	conn, err := dbPool.GetConn()
+	if err != nil {
+		b.Fatalf("%+v", err)
+	}
+
+	ctx := context.TODO()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ccd := newTableCoreConfigDatas()
+		if _, err := ccd.LoadGoSQLDriverMySQL(ctx, conn); err != nil {
+			b.Fatalf("%+v", err)
+		}
+		if len(ccd.Data) != coreConfigDataRowCount {
+			b.Fatal("Length mismatch")
+		}
+	}
+	if err := dbPool.PutConn(conn); err != nil {
+		b.Fatalf("%+v", err)
+	}
+}
+
+```
 
 A MySQL-Driver for Go's [database/sql](https://golang.org/pkg/database/sql/) package
 
